@@ -1,0 +1,500 @@
+
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Psych Timeline Extractor (Single-File SMART App)</title>
+
+  <!-- SMART on FHIR JS Client Library (browser) -->
+  <script src="https://cdn.jsdelivr.net/npm/fhirclient/build/fhir-client.min.js"></script> <!-- 【1-963c93】 -->
+
+  <style>
+    body { font-family: Arial, sans-serif; margin: 18px; }
+    .warn { background:#fff2d6; padding:10px; border-radius:6px; margin-bottom:12px; }
+    .card { border:1px solid #ddd; padding:12px; border-radius:8px; margin:12px 0; }
+    pre { background:#f6f6f6; padding:12px; overflow-x:auto; white-space: pre-wrap; }
+    .small { font-size:12px; color:#444; }
+    button { padding: 8px 12px; }
+    .row { display:flex; gap:12px; flex-wrap:wrap; align-items:center; }
+    .pill { padding:2px 8px; border-radius:999px; background:#eef; font-size:12px; }
+    .err { color:#b00; }
+    .ok { color:#0a4; }
+  </style>
+</head>
+
+<body>
+  <h2>Psych Timeline Extractor (Single-File SMART on FHIR)</h2>
+
+  <div class="warn">
+    <b>Documentation support only.</b> This app extracts and cites text; it does not diagnose, recommend treatment, or predict risk.
+    Clinician review is required for all outputs.
+  </div>
+
+  <div class="card">
+    <div class="row">
+      <button id="runBtn">Pull & Build Timeline</button>
+      <span id="status" class="small"></span>
+      <span id="mode" class="pill">mode: —</span>
+    </div>
+    <div class="small">
+      Use this file as both the <b>Launch URL</b> and <b>Redirect URL</b> in Oracle code Console (single-file pattern). 【2-d40f5a】
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Timeline Output (JSON)</h3>
+    <pre id="timelineOut">—</pre>
+  </div>
+
+  <div class="card">
+    <h3>Draft Narrative (with citations)</h3>
+    <pre id="draftOut">—</pre>
+  </div>
+
+<script>
+/**
+ * SINGLE-FILE SMART APP
+ * Normally SMART browser apps use 2 pages (launch + redirect). 【1-963c93】
+ * This file merges both behaviors using authorize() and ready(). 【2-d40f5a】
+ */
+
+// ---------------------------
+// CONFIG: fill these in
+// ---------------------------
+const APP = {
+  clientId: "YOUR_CLIENT_ID_FROM_ORACLE_CODE_CONSOLE",
+  redirectUri: window.location.origin + window.location.pathname,
+  scope: [
+    "launch",
+    "openid",
+    "fhirUser",
+    "patient/MedicationRequest.read",
+    "patient/DocumentReference.read",
+    "patient/Binary.read"
+  ].join(" ")
+};
+
+// ---------------------------
+// UI helpers
+// ---------------------------
+function setStatus(msg, cls="") {
+  const el = document.getElementById("status");
+  el.className = "small " + cls;
+  el.textContent = msg;
+}
+function setMode(msg) {
+  document.getElementById("mode").textContent = "mode: " + msg;
+}
+
+// ---------------------------
+// Utility: URL parsing
+// ---------------------------
+function qs(name) {
+  return new URLSearchParams(window.location.search).get(name);
+}
+function hasSmartLaunchContext() {
+  return !!qs("iss") && !!qs("launch");
+}
+function hasAuthResponse() {
+  return !!qs("code") && !!qs("state");
+}
+
+// ---------------------------
+// Extraction configuration
+// ---------------------------
+const CONFIG = {
+  maxNotes: 120,
+  contextChars: 240,
+  quoteMaxLen: 260,
+
+  noteTypeHints: {
+    progress: /progress note|daily note|psychiatry progress|mh progress|progress/i,
+    psu: /psu\b|psychiatric services unit|psychiatric service unit/i,
+    admission: /admission note|h&p|history and physical|initial assessment|intake/i,
+    discharge: /discharge summary|discharge note/i
+  },
+
+  institutions: {
+    WRC: /wisconsin resource center|\bwrc\b/i,
+    WMHI: /winnebago mental health institute|\bwmhi\b/i,
+    MMHI: /mendota mental health institute|\bmmhi\b/i
+  },
+
+  tests: /(rbans|wais|wisc|mmpi|moca|neuropsych|neuropsychological testing|tomm|sirs|hcr-?20|ecst-?r)/ig,
+
+  selfHarm: /\b(suicid(al|ality)?|self[- ]harm|cut(ting)?|overdose|od\b|hanging|strangl(e|ed|ing)|attempt(ed)? suicide)\b/ig,
+  violence: /\b(assault(ed)?|fight(ing)?|battery|violent|violence|threat(en(ed)?)|weapon|stab(bed|bing)?|hit|punched|kicked|aggression)\b/ig,
+
+  response: /\b(improv(ed|ing)?|better|worse|no benefit|ineffective|help(ed|ful)?|partial response|side effect|eps|akathisia|sedat(ed|ion)|weight gain|nonadher(en|ence)|refus(ed|al))\b/ig,
+
+  medNameHeuristic: /\b(olanzapine|risperidone|quetiapine|haloperidol|clozapine|aripiprazole|ziprasidone|lithium|valpro|lamotrigine|sertraline|fluoxetine|venlafaxine|bupropion|mirtazapine|prazosin)\b/ig
+};
+
+// ---------------------------
+// Text helpers
+// ---------------------------
+function decodeBase64(b64) {
+  const binary = atob(b64);
+  const bytes = Uint8Array.from(binary, c => c.charCodeAt(0));
+  return new TextDecoder("utf-8").decode(bytes);
+}
+function htmlToText(html) {
+  const parser = new DOMParser();
+  const doc = parser.parseFromString(html, "text/html");
+  doc.querySelectorAll("script,style,noscript").forEach(n => n.remove());
+  const text = (doc.body ? doc.body.innerText : doc.documentElement.textContent) || "";
+  return text.replace(/\u00a0/g, " ").replace(/\s+/g, " ").trim();
+}
+function windowAround(text, idx, span=280) {
+  const start = Math.max(0, idx - span);
+  const end = Math.min(text.length, idx + span);
+  return { start, end, excerpt: text.slice(start, end) };
+}
+function classifyNoteType(title="") {
+  for (const [k, re] of Object.entries(CONFIG.noteTypeHints)) {
+    if (re.test(title)) return k;
+  }
+  return "other";
+}
+function detectInstitution(text) {
+  for (const [k, re] of Object.entries(CONFIG.institutions)) {
+    if (re.test(text)) return k;
+  }
+  return null;
+}
+function extractQuotes(text) {
+  const quoteRegex = /(["“”‘’])(.{3,260}?)\1/g;
+  const quotes = [];
+  let m;
+  while ((m = quoteRegex.exec(text)) !== null) {
+    const q = m[2].replace(/\s+/g, " ").trim();
+    if (q.length <= CONFIG.quoteMaxLen) quotes.push({ quote: q, index: m.index });
+  }
+  return quotes;
+}
+async function sha256Hex(str) {
+  const data = new TextEncoder().encode(str);
+  const hash = await crypto.subtle.digest("SHA-256", data);
+  return Array.from(new Uint8Array(hash)).map(b => b.toString(16).padStart(2, "0")).join("");
+}
+
+// ---------------------------
+// FHIR paging helper
+// ---------------------------
+async function getAllPages(client, initialUrl) {
+  let url = initialUrl;
+  let entries = [];
+  while (url) {
+    const bundle = await client.request(url);
+    if (bundle.entry) entries = entries.concat(bundle.entry);
+    const next = (bundle.link || []).find(l => l.relation === "next");
+    url = next ? next.url : null;
+  }
+  return entries;
+}
+
+// ---------------------------
+// MedicationRequest normalization
+// ---------------------------
+function normalizeMedRequests(entries) {
+  return (entries || [])
+    .map(e => e.resource)
+    .filter(r => r && r.resourceType === "MedicationRequest")
+    .map(r => ({
+      id: r.id,
+      status: r.status,
+      authoredOn: r.authoredOn || null,
+      medication:
+        (r.medicationCodeableConcept && r.medicationCodeableConcept.text) ||
+        (r.medicationReference && r.medicationReference.reference) ||
+        "Unknown medication",
+      dosage: (r.dosageInstruction && r.dosageInstruction[0] && r.dosageInstruction[0].text) || null
+    }))
+    .sort((a, b) => (a.authoredOn || "").localeCompare(b.authoredOn || ""));
+}
+
+// ---------------------------
+// DocumentReference note retrieval (text/html via attachment.data or Binary URL)
+// ---------------------------
+function docMeta(dr) {
+  return {
+    docRefId: `DocumentReference/${dr.id}`,
+    date: dr.date || null,
+    title: (dr.type && dr.type.text) || dr.description || "Clinical note"
+  };
+}
+
+async function fetchHtmlNoteText(client, dr) {
+  const attachments = (dr.content || []).map(c => c.attachment).filter(Boolean);
+
+  for (const att of attachments) {
+    const ct = (att.contentType || "").toLowerCase();
+    if (!ct.includes("text/html") && !ct.includes("application/xhtml")) continue;
+
+    if (att.data) {
+      const html = decodeBase64(att.data);
+      return htmlToText(html);
+    }
+
+    if (att.url) {
+      const relative = att.url.startsWith(client.state.serverUrl)
+        ? att.url.replace(client.state.serverUrl, "")
+        : att.url;
+
+      const bin = await client.request(relative);
+      if (bin && bin.data) {
+        const html = decodeBase64(bin.data);
+        return htmlToText(html);
+      }
+    }
+  }
+  return null;
+}
+
+// ---------------------------
+// Citation + event helpers
+// ---------------------------
+async function makeCitation(meta, excerpt, matchOffset) {
+  return {
+    documentReferenceId: meta.docRefId,
+    noteTitle: meta.title,
+    noteDate: meta.date,
+    matchOffset,
+    excerpt,
+    excerptHash: await sha256Hex(excerpt)
+  };
+}
+async function makeEvent(category, date, location, detail, meta, excerpt, matchOffset, patientQuote=null) {
+  return {
+    category,
+    date: date || meta.date || null,
+    location: location || null,
+    detail,
+    patientQuote,
+    citation: await makeCitation(meta, excerpt, matchOffset)
+  };
+}
+
+// ---------------------------
+// Extract from note
+// ---------------------------
+async function extractFromNote(noteText, meta, medsFromOrders) {
+  const events = [];
+  const noteType = classifyNoteType(meta.title);
+  const inst = detectInstitution(noteText);
+
+  if (inst) {
+    const idx = noteText.search(CONFIG.institutions[inst]);
+    const w = windowAround(noteText, idx);
+    events.push(await makeEvent(
+      "hospitalization_mention",
+      meta.date,
+      inst,
+      `Mentions ${inst} in ${noteType} note`,
+      meta,
+      w.excerpt,
+      idx
+    ));
+  }
+
+  let tm;
+  while ((tm = CONFIG.tests.exec(noteText)) !== null) {
+    const w = windowAround(noteText, tm.index);
+    events.push(await makeEvent(
+      "neuropsych_testing",
+      meta.date,
+      inst,
+      `Neuropsych testing referenced: ${tm[0]}`,
+      meta,
+      w.excerpt,
+      tm.index
+    ));
+  }
+
+  for (const [cat, re] of [["self_harm", CONFIG.selfHarm], ["violence_or_threats", CONFIG.violence]]) {
+    let m;
+    while ((m = re.exec(noteText)) !== null) {
+      const w = windowAround(noteText, m.index);
+      events.push(await makeEvent(
+        cat,
+        meta.date,
+        inst,
+        `Indicator: ${m[0]}`,
+        meta,
+        w.excerpt,
+        m.index
+      ));
+    }
+  }
+
+  const quotes = extractQuotes(noteText);
+
+  const medAnchors = [];
+  let mm;
+  while ((mm = CONFIG.medNameHeuristic.exec(noteText)) !== null) {
+    medAnchors.push({ med: mm[0], index: mm.index });
+  }
+  for (const m of medsFromOrders.slice(-40)) {
+    const medName = (m.medication || "").toLowerCase();
+    if (!medName || medName.length < 4) continue;
+    const idx = noteText.toLowerCase().indexOf(medName);
+    if (idx >= 0) medAnchors.push({ med: m.medication, index: idx });
+  }
+
+  let rm;
+  while ((rm = CONFIG.response.exec(noteText)) !== null) {
+    const w = windowAround(noteText, rm.index, 340);
+
+    let nearestMed = null, bestDist = 1e9;
+    for (const a of medAnchors) {
+      const d = Math.abs(a.index - rm.index);
+      if (d < bestDist && d < 400) { bestDist = d; nearestMed = a.med; }
+    }
+
+    let nearestQuote = null, qDist = 1e9;
+    for (const q of quotes) {
+      const d = Math.abs(q.index - rm.index);
+      if (d < qDist && d < 400) { qDist = d; nearestQuote = q.quote; }
+    }
+
+    const parts = [];
+    if (nearestMed) parts.push(`Medication: ${nearestMed}`);
+    parts.push(`Response indicator: ${rm[0]}`);
+    const detail = parts.join(" | ");
+
+    events.push(await makeEvent(
+      "medication_response",
+      meta.date,
+      inst,
+      detail,
+      meta,
+      w.excerpt,
+      rm.index,
+      nearestQuote
+    ));
+  }
+
+  return events;
+}
+
+// ---------------------------
+// Draft narrative
+// ---------------------------
+function summarizeTimeline(events) {
+  const counts = { WRC: 0, WMHI: 0, MMHI: 0 };
+  for (const e of events) {
+    if (e.category === "hospitalization_mention" && e.location && counts[e.location] !== undefined) {
+      counts[e.location] += 1;
+    }
+  }
+
+  const lines = [];
+  lines.push("DRAFT TIMELINE (Clinician review required)");
+  lines.push("");
+  lines.push("Hospitalization mentions (conservative count from note mentions):");
+  lines.push(`- WRC mentions: ${counts.WRC}`);
+  lines.push(`- WMHI mentions: ${counts.WMHI}`);
+  lines.push(`- MMHI mentions: ${counts.MMHI}`);
+  lines.push("");
+  lines.push("Extracted events (chronological):");
+
+  const sorted = [...events].sort((a,b) => (a.date || "").localeCompare(b.date || ""));
+  for (const e of sorted.slice(0, 200)) {
+    lines.push(`- [${e.date || "unknown"}] ${e.category}${e.location ? " ("+e.location+")" : ""}: ${e.detail}`);
+    if (e.patientQuote) lines.push(`  Patient quote: "${e.patientQuote}"`);
+    lines.push(`  Citation: ${e.citation.documentReferenceId}${e.citation.noteDate ? " | " + e.citation.noteDate : ""} | hash=${e.citation.excerptHash.slice(0,12)}…`);
+  }
+  return lines.join("\n");
+}
+
+// ---------------------------
+// Main run
+// ---------------------------
+async function runApp(client) {
+  const patientId = client.patient && client.patient.id;
+  if (!patientId) throw new Error("No patient context available (launch may not include a patient).");
+
+  setStatus("Pulling MedicationRequest…", "ok");
+  const medEntries = await getAllPages(client, `MedicationRequest?patient=${patientId}&_count=100`);
+  const meds = normalizeMedRequests(medEntries);
+
+  setStatus("Pulling DocumentReference list…", "ok");
+  const docEntries = await getAllPages(client, `DocumentReference?patient=${patientId}&_count=50`);
+  const docRefs = (docEntries || []).map(e => e.resource).filter(Boolean).slice(0, CONFIG.maxNotes);
+
+  setStatus(`Fetching/analyzing up to ${docRefs.length} HTML notes…`, "ok");
+
+  let events = [];
+  for (const dr of docRefs) {
+    const meta = docMeta(dr);
+    const text = await fetchHtmlNoteText(client, dr);
+    if (!text) continue;
+    const noteEvents = await extractFromNote(text, meta, meds);
+    events = events.concat(noteEvents);
+  }
+
+  document.getElementById("timelineOut").textContent = JSON.stringify(events, null, 2);
+  document.getElementById("draftOut").textContent = summarizeTimeline(events);
+  setStatus("Done.", "ok");
+}
+
+// ---------------------------
+// SMART bootstrap
+// authorize() starts the launch sequence; ready() resumes after redirect. 【2-d40f5a】
+document.getElementById("runBtn").addEventListener("click", async () => {
+  try {
+    setStatus("Initializing…");
+    setMode("starting");
+
+    if (hasSmartLaunchContext() && !hasAuthResponse()) {
+      setMode("authorize()");
+      setStatus("SMART launch context detected — starting authorization…");
+      FHIR.oauth2.authorize({
+        clientId: APP.clientId,
+        scope: APP.scope,
+        redirectUri: APP.redirectUri
+      });
+      return;
+    }
+
+    setMode("ready()");
+    setStatus("Resuming SMART session…");
+    const client = await FHIR.oauth2.ready();  // 【2-d40f5a】
+    setMode("running");
+    await runApp(client);
+
+  } catch (e) {
+    console.error(e);
+    setMode("error");
+    setStatus("Error: " + (e?.message || String(e)), "err");
+  }
+});
+
+// Auto-run after OAuth redirect
+(async function autoRunIfAuthReturned(){
+  try {
+    if (hasAuthResponse()) {
+      setMode("ready()->autorun");
+      setStatus("Auth response detected — resuming…");
+      const client = await FHIR.oauth2.ready(); // 【2-d40f5a】
+      setMode("running");
+      await runApp(client);
+    } else if (hasSmartLaunchContext()) {
+      setMode("launch-context");
+      setStatus("Launch context present. Click 'Pull & Build Timeline' to begin authorization.");
+    } else {
+      setMode("standalone");
+      setStatus("No SMART launch context detected. Open from Oracle code Console / PowerChart.");
+    }
+  } catch (e) {
+    console.error(e);
+    setMode("error");
+    setStatus("Error during autorun: " + (e?.message || String(e)), "err");
+  }
+})();
+</script>
+
+</body>
+</html>
