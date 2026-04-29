@@ -276,8 +276,8 @@ function summarizeTimeline(events) {
     if (e.patientQuote) lines.push(`  Patient quote: "${e.patientQuote}"`);
     lines.push(`  Citation: ${e.citation.documentReferenceId}${e.citation.noteDate ? " | " + e.citation.noteDate : ""} | hash=${String(e.citation.excerptHash).slice(0,12)}…`);
   }
-  return lines.join("
-");
+  return lines.join("\n");
+
 }
 
 async function exportToWordDocx() {
@@ -401,18 +401,7 @@ document.getElementById("runBtn").addEventListener("click", async () => {
  
     
 
-    setMode("ready()");
-    setStatus("Resuming SMART session…", "ok");
-    const client = await FHIR.oauth2.ready();
-    setMode("running");
-    await runApp(client);
-
-  } catch (e) {
-    console.error(e);
-    setMode("error");
-    setStatus("Error: " + (e?.message || String(e)), "err");
-  }
-});
+    
 
 document.getElementById("exportBtn").addEventListener("click", () => {
   exportToWordDocx().catch(err => {
