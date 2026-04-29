@@ -6,17 +6,10 @@
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Psych Timeline Extractor (Single-File SMART App)</title>
 
-  <!-- SMART on FHIR JS Client Library (browser) -->
-  
+ 
 
-
-
-
-
-
-  <!-- Word export (client-side): docx + FileSaver -->
-  
-<script src="./fhir-client.min<script src="./index.umd.cjs"></script>
+<script src="./fhir-client.min.js"></script>
+<script src="./index.umd.cjs"></script>
 <script src="./FileSaver.min.js"></script>
 
   <style>
@@ -103,20 +96,20 @@ const CONFIG = {
   quoteMaxLen: 260,
   noteTypeHints: {
     progress: /progress note|daily note|psychiatry progress|mh progress|progress/i,
-    psu: /psu|psychiatric services unit|psychiatric service unit/i,
+    psu: /psu\b|psychiatric services unit|psychiatric service unit/i,
     admission: /admission note|h&p|history and physical|initial assessment|intake/i,
     discharge: /discharge summary|discharge note/i
   },
   institutions: {
-    WRC: /wisconsin resource center|wrc/i,
-    WMHI: /winnebago mental health institute|wmhi/i,
-    MMHI: /mendota mental health institute|mmhi/i
+    WRC: /wisconsin resource center|\bwrc\b/i,
+    WMHI: /winnebago mental health institute|\bwmhi\b/i,
+    MMHI: /mendota mental health institute|\bmmhi\b/i
   },
   tests: /(rbans|wais|wisc|mmpi|moca|neuropsych|neuropsychological testing|tomm|sirs|hcr-?20|ecst-?r)/ig,
-  selfHarm: /(suicid(al|ality)?|self[- ]harm|cut(ting)?|overdose|od|hanging|strangl(e|ed|ing)|attempt(ed)? suicide)/ig,
-  violence: /(assault(ed)?|fight(ing)?|battery|violent|violence|threat(en(ed)?)|weapon|stab(bed|bing)?|hit|punched|kicked|aggression)/ig,
-  response: /(improv(ed|ing)?|better|worse|no benefit|ineffective|help(ed|ful)?|partial response|side effect|eps|akathisia|sedat(ed|ion)|weight gain|nonadher(en|ence)|refus(ed|al))/ig,
-  medNameHeuristic: /(olanzapine|risperidone|quetiapine|haloperidol|clozapine|aripiprazole|ziprasidone|lithium|valpro|lamotrigine|sertraline|fluoxetine|venlafaxine|bupropion|mirtazapine|prazosin)/ig
+  selfHarm: /\b(suicid(al|ality)?|self[- ]harm|cut(ting)?|overdose|od\b|hanging|strangl(e|ed|ing)|attempt(ed)? suicide)\b/ig,
+  violence: /\b(assault(ed)?|fight(ing)?|battery|violent|violence|threat(en(ed)?)|weapon|stab(bed|bing)?|hit|punched|kicked|aggression)\b/ig,
+  response: /\b(improv(ed|ing)?|better|worse|no benefit|ineffective|help(ed|ful)?|partial response|side effect|eps|akathisia|sedat(ed|ion)|weight gain|nonadher(en|ence)|refus(ed|al))\b/ig,
+  medNameHeuristic: /\b(olanzapine|risperidone|quetiapine|haloperidol|clozapine|aripiprazole|ziprasidone|lithium|valpro|lamotrigine|sertraline|fluoxetine|venlafaxine|bupropion|mirtazapine|prazosin)\b/ig
 };
 
 function decodeBase64(b64) {
@@ -145,7 +138,7 @@ function detectInstitution(text) {
   return null;
 }
 function extractQuotes(text) {
-  const quoteRegex = /(["“”‘’])(.{3,260}?)/g;
+  const quoteRegex = /(["“”‘’])(.{3,260}?)(["“”‘’])/g
   const quotes = [];
   let m;
   while ((m = quoteRegex.exec(text)) !== null) {
