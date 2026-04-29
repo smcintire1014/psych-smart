@@ -387,12 +387,13 @@ document.getElementById("runBtn").addEventListener("click", async () => {
     setStatus("Initializing…");
     setMode("starting");
 
-    if (hasSmartLaunchContext() && !hasAuthResponse()) {
-      setMode("authorize()");
-      setStatus("Launch context present. Starting authorization…", "ok");
-      FHIR.oauth2.authorize({ clientId: APP.clientId, scope: APP.scope, redirectUri: APP.redirectUri });
-      return;
-    }
+   
+} else if (hasSmartLaunchContext()) {
+  setMode("launch-context");
+  setStatus("Launch context present. Click 'Pull & Build Timeline' to begin authorization.");
+}
+ 
+    
 
     setMode("ready()");
     setStatus("Resuming SMART session…", "ok");
@@ -415,6 +416,19 @@ document.getElementById("exportBtn").addEventListener("click", () => {
 });
 
 // Auto-run after OAuth redirect
+  
+// ✅ AUTO-START SMART AUTH WHEN LAUNCHED FROM EHR
+if (hasSmartLaunchContext() && !hasAuthResponse()) {
+  setMode("authorize()");
+  setStatus("Starting SMART authorization…", "ok");
+
+  FHIR.oauth2.authorize({
+    clientId: APP.clientId,
+    scope: APP.scope,
+    redirectUri: APP.redirectUri
+  });
+}
+
 (async function autoRunIfAuthReturned(){
   try {
     if (hasAuthResponse()) {
