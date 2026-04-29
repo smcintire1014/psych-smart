@@ -438,8 +438,17 @@ if (hasSmartLaunchContext() && !hasAuthResponse()) {
       setMode("running");
       await runApp(client);
     } else if (hasSmartLaunchContext()) {
-      setMode("launch-context");
-      setStatus("Launch context present. Click 'Pull & Build Timeline' to begin authorization.");
+      
+setMode("authorize()");
+  setStatus("Starting SMART authorization…", "ok");
+
+  FHIR.oauth2.authorize({
+    clientId: APP.clientId,
+    scope: APP.scope,
+    redirectUri: APP.redirectUri
+  });
+}
+
     } else {
       setMode("standalone");
       setStatus("No SMART launch context detected. Open from Oracle code Console / PowerChart.");
