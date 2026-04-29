@@ -382,16 +382,22 @@ async function runApp(client) {
 
 // Button handlers
 
+
 document.getElementById("runBtn").addEventListener("click", async () => {
   try {
-    setStatus("Initializing…");
-    setMode("starting");
+    setMode("running");
+    setStatus("Resuming SMART session…", "ok");
 
-   
-} else if (hasSmartLaunchContext()) {
-  setMode("launch-context");
-  setStatus("Launch context present. Click 'Pull & Build Timeline' to begin authorization.");
-}
+    const client = await FHIR.oauth2.ready();
+    await runApp(client);
+
+  } catch (e) {
+    console.error(e);
+    setMode("error");
+    setStatus("Error: " + (e?.message || String(e)), "err");
+  }
+});
+
  
     
 
@@ -418,47 +424,45 @@ document.getElementById("exportBtn").addEventListener("click", () => {
 // Auto-run after OAuth redirect
   
 // ✅ AUTO-START SMART AUTH WHEN LAUNCHED FROM EHR
-if (hasSmartLaunchContext() && !hasAuthResponse()) {
-  setMode("authorize()");
-  setStatus("Starting SMART authorization…", "ok");
 
-  FHIR.oauth2.authorize({
-    clientId: APP.clientId,
-    scope: APP.scope,
-    redirectUri: APP.redirectUri
-  });
-}
-
-(async function autoRunIfAuthReturned(){
+(async function autoRunIfAuthReturned() {
   try {
+    // ✅ Returned from OAuth — resume and run automatically
     if (hasAuthResponse()) {
-      setMode("ready()->autorun");
-      setStatus("Auth response detected — resuming…", "ok");
-      const client = await FHIR.oauth2.ready();
       setMode("running");
+      setStatus("Auth response detected — resuming…", "ok");
+
+      const client = await FHIR.oauth2.ready();
       await runApp(client);
-    } else if (hasSmartLaunchContext()) {
-      
-setMode("authorize()");
-  setStatus("Starting SMART authorization…", "ok");
-
-  FHIR.oauth2.authorize({
-    clientId: APP.clientId,
-    scope: APP.scope,
-    redirectUri: APP.redirectUri
-  });
-}
-
-    } else {
-      setMode("standalone");
-      setStatus("No SMART launch context detected. Open from Oracle code Console / PowerChart.");
+      return;
     }
+
+    // ✅ Fresh SMART launch — must authorize immediately
+    if (hasSmartLaunchContext()) {
+      setMode("authorize()");
+      setStatus("Starting SMART authorization…", "ok");
+
+      FHIR.oauth2.authorize({
+        clientId: APP.clientId,
+        scope: APP.scope,
+        redirectUri: APP.redirectUri
+      });
+      return;
+    }
+
+    // ✅ Opened directly (no SMART context)
+    setMode("standalone");
+    setStatus("No SMART launch context detected.");
+
   } catch (e) {
     console.error(e);
     setMode("error");
-    setStatus("Error during autorun: " + (e?.message || String(e)), "err");
+    setStatus("Error: " + (e?.message || String(e)), "err");
   }
 })();
+
+
+
 </script>
 
 </body>
